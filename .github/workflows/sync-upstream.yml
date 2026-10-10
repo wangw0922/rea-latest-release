@@ -1,4 +1,4 @@
-name: Sync from upstream
+name: Force mirror from upstream
 
 on:
   schedule:
@@ -9,26 +9,45 @@ permissions:
   contents: write
 
 concurrency:
-  group: sync-upstream-main
+  group: upstream-force-mirror-main
   cancel-in-progress: false
 
 jobs:
-  sync:
+  mirror:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the default branch
+      - name: Check out main with full Git history
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      - name: Merge upstream changes and push
+      - name: Force mirror upstream and retain this workflow
         shell: bash
         run: |
           set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          previous_head="$(git rev-parse HEAD)"
+          saved_workflow="$RUNNER_TEMP/sync-upstream.yml"
+          cp .github/workflows/sync-upstream.yml "$saved_workflow"
+
           git remote add upstream https://github.com/morluto/rea.git
           git fetch --no-tags upstream main
-          git merge --no-edit upstream/main
-          git push origin HEAD:main
+          git reset --hard refs/remotes/upstream/main
+
+          mkdir -p .github/workflows
+          cp "$saved_workflow" .github/workflows/sync-upstream.yml
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: preserve six-hour upstream mirror workflow"
+          fi
+
+          if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse "${previous_head}^{tree}")" ] && git merge-base --is-ancestor refs/remotes/upstream/main "$previous_head"; then
+            echo "Already identical to upstream except for the retained mirror workflow."
+            exit 0
+          fi
+
+          git push --force-with-lease="refs/heads/main:$previous_head" origin HEAD:refs/heads/main
