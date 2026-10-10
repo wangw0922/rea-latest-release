@@ -1,8 +1,7 @@
-import type { BigIntStats } from "node:fs";
-import { readdir, readlink, realpath } from "node:fs/promises";
+import type { BigIntStats, Dir, Dirent } from "node:fs";
+import { opendir, readlink, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
 import {
   cancelled,
   entryFailure,
@@ -21,6 +20,7 @@ import {
 import {
   type PendingDirectory,
   type ReferenceSourceEntry,
+  type ReferenceSourceEntryKind,
   type ReferenceSourceResult,
   type TraversalState,
 } from "./ReferenceSourceReaderTypes.js";
@@ -47,20 +47,50 @@ export const traverseDirectory = async (
     );
     return { ok: true, value: undefined };
   }
-  const names = await readDirectoryNames(current.path);
+  const directories: PendingDirectory[] = [];
+  let readFailure: string | undefined;
+  let handle: Dir | undefined;
+  try {
+    handle = await opendir(current.path);
+  } catch (cause: unknown) {
+    readFailure = directoryReadFailure(cause);
+  }
+  if (handle !== undefined) {
+    const iterator = handle[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        let child: IteratorResult<Dirent>;
+        try {
+          child = await iterator.next();
+        } catch (cause: unknown) {
+          readFailure = directoryReadFailure(cause);
+          break;
+        }
+        if (child.done) break;
+        const result = await processEntry(
+          state,
+          current,
+          child.value.name,
+          directories,
+        );
+        if (!result.ok) return result;
+      }
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
   if (isAborted(state.signal)) return { ok: false, error: cancelled() };
-  if (!names.ok) {
+  if (readFailure !== undefined) {
     state.entries.push(
       entryFailure(
         pathFromRoot(state.root, current.path),
         "directory",
         "io",
-        names.message,
+        readFailure,
       ),
     );
     return { ok: true, value: undefined };
   }
-  if (isAborted(state.signal)) return { ok: false, error: cancelled() };
   const after = await validateDirectory(
     state.root,
     state.rootIdentity,
@@ -85,35 +115,15 @@ export const traverseDirectory = async (
       kind: "directory",
       path: pathFromRoot(state.root, current.path),
     });
-  const directories: PendingDirectory[] = [];
-  for (const name of names.value) {
-    const result = await processEntry(state, current, name, directories);
-    if (!result.ok) return result;
-  }
   directories.reverse();
   state.pending.push(...directories);
   return { ok: true, value: undefined };
 };
 
-const readDirectoryNames = async (
-  path: string,
-): Promise<
-  | { readonly ok: true; readonly value: string[] }
-  | { readonly ok: false; readonly message: string }
-> => {
-  try {
-    return {
-      ok: true,
-      value: (await readdir(path)).sort(compareUnicodeCodePoints),
-    };
-  } catch (cause: unknown) {
-    const message = filesystemFailureDetail(
-      cause,
-      "Directory could not be read",
-    );
-    if (message === undefined) throw cause;
-    return { ok: false, message };
-  }
+const directoryReadFailure = (cause: unknown): string => {
+  const message = filesystemFailureDetail(cause, "Directory could not be read");
+  if (message === undefined) throw cause;
+  return message;
 };
 
 const readMetadata = async (
@@ -143,7 +153,20 @@ const processEntry = async (
   if (isAborted(state.signal)) return { ok: false, error: cancelled() };
   const absolute = join(current.path, name);
   const path = pathFromRoot(state.root, absolute);
-  const excluded = applyExclusion(state.shouldExclude, path);
+  const metadata = await readMetadata(absolute);
+  if (isAborted(state.signal)) return { ok: false, error: cancelled() };
+  if (!metadata.ok) {
+    state.entries.push(entryFailure(path, "unknown", "io", metadata.message));
+    return { ok: true, value: undefined };
+  }
+  const kind = metadata.value.isSymbolicLink()
+    ? "symlink"
+    : metadata.value.isDirectory()
+      ? "directory"
+      : metadata.value.isFile()
+        ? "file"
+        : "other";
+  const excluded = applyExclusion(state.shouldExclude, path, kind);
   if (!excluded.ok)
     return {
       ok: false,
@@ -154,28 +177,14 @@ const processEntry = async (
       },
     };
   if (excluded.value) return { ok: true, value: undefined };
-  const metadata = await readMetadata(absolute);
   if (isAborted(state.signal)) return { ok: false, error: cancelled() };
-  if (!metadata.ok) {
-    state.entries.push(entryFailure(path, "unknown", "io", metadata.message));
-    return { ok: true, value: undefined };
-  }
-  if (isAborted(state.signal))
-    return {
-      ok: false,
-      error: {
-        tag: "reference-source-reader",
-        code: "cancelled",
-        message: "Reference source traversal cancelled",
-      },
-    };
-  if (metadata.value.isSymbolicLink())
+  if (kind === "symlink")
     state.entries.push(
       await describeSymlink(state.root, absolute, path, state.signal),
     );
-  else if (metadata.value.isDirectory()) {
+  else if (kind === "directory") {
     directories.push({ path: absolute });
-  } else if (!metadata.value.isFile())
+  } else if (kind !== "file")
     state.entries.push(
       entryFailure(
         path,
@@ -289,11 +298,14 @@ const describeSymlink = async (
 };
 
 const applyExclusion = (
-  shouldExclude: ((path: string) => boolean) | undefined,
+  shouldExclude:
+    | ((path: string, kind: ReferenceSourceEntryKind) => boolean)
+    | undefined,
   path: string,
+  kind: ReferenceSourceEntryKind,
 ): { readonly ok: true; readonly value: boolean } | { readonly ok: false } => {
   try {
-    return { ok: true, value: shouldExclude?.(path) === true };
+    return { ok: true, value: shouldExclude?.(path, kind) === true };
   } catch (cause: unknown) {
     // Exclusion predicates are caller-supplied; a throwing predicate fails
     // closed and the caller-visible `{ ok: false }` preserves the rejection
