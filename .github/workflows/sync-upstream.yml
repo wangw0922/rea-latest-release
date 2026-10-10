@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: upstream-force-mirror-main
+  group: upstream-source-mirror-main
   cancel-in-progress: false
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Force mirror upstream and retain this workflow
+      - name: Mirror upstream source while retaining local GitHub workflows
         shell: bash
         run: |
           set -euo pipefail
@@ -30,24 +30,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          previous_head="$(git rev-parse HEAD)"
-          saved_workflow="$RUNNER_TEMP/sync-upstream.yml"
-          cp .github/workflows/sync-upstream.yml "$saved_workflow"
+          # The default GITHUB_TOKEN cannot update other workflow files.
+          # Keep all local workflow definitions, including this scheduled mirror.
+          cp -a .github/workflows "$RUNNER_TEMP/retained-workflows"
 
           git remote add upstream https://github.com/morluto/rea.git
           git fetch --no-tags upstream main
-          git reset --hard refs/remotes/upstream/main
 
-          mkdir -p .github/workflows
-          cp "$saved_workflow" .github/workflows/sync-upstream.yml
+          # Replace tracked source files with the exact upstream tree,
+          # including upstream additions and deletions, without rewriting history.
+          git read-tree --reset -u refs/remotes/upstream/main
+
+          mkdir -p .github
+          rm -rf .github/workflows
+          cp -a "$RUNNER_TEMP/retained-workflows" .github/workflows
+
           git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "ci: preserve six-hour upstream mirror workflow"
-          fi
-
-          if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse "${previous_head}^{tree}")" ] && git merge-base --is-ancestor refs/remotes/upstream/main "$previous_head"; then
-            echo "Already identical to upstream except for the retained mirror workflow."
+          if git diff --cached --quiet; then
+            echo "Source already matches upstream (excluding preserved workflows)."
             exit 0
           fi
 
-          git push --force-with-lease="refs/heads/main:$previous_head" origin HEAD:refs/heads/main
+          git commit -m "chore: mirror upstream code and preserve GitHub workflows"
+          git push origin HEAD:refs/heads/main
