@@ -1,4 +1,5 @@
 import type { ExecutableFormatHint } from "../domain/dosCom.js";
+import type { BinaryArchitecture } from "../domain/binaryTargetTypes.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import type { DirectAnalysisDependencies } from "./DirectAnalysisDependencies.js";
 import type { BinarySession } from "./binary/BinarySession.js";
@@ -91,6 +92,8 @@ export const runDirectAnalysis = async (
     readonly signal?: AbortSignal;
     readonly providerId?: AnalysisProviderSelector;
     readonly formatHint?: ExecutableFormatHint;
+    readonly architecture?: BinaryArchitecture;
+    readonly entryPoint?: string;
   } = {},
 ): Promise<JsonValue> =>
   withProcessCancellation(options.signal, (signal) =>
@@ -101,6 +104,12 @@ export const runDirectAnalysis = async (
       ...(options.formatHint === undefined
         ? {}
         : { formatHint: options.formatHint }),
+      ...(options.architecture === undefined
+        ? {}
+        : { architecture: options.architecture }),
+      ...(options.entryPoint === undefined
+        ? {}
+        : { entryPoint: options.entryPoint }),
       ...(options.providerId === undefined
         ? {}
         : { providerId: options.providerId }),
@@ -168,6 +177,9 @@ const runManagedProviderAnalysis = async (
     result: value.result,
     rawResult: value.rawResult,
     limitations: value.limitations,
+    ...(value.relationshipCoverage === undefined
+      ? {}
+      : { relationshipCoverage: value.relationshipCoverage }),
     locations: value.locations,
   });
 };
@@ -187,6 +199,8 @@ const runAnalysis = async (
     readonly signal: AbortSignal;
     readonly providerId?: AnalysisProviderSelector;
     readonly formatHint?: ExecutableFormatHint;
+    readonly architecture?: BinaryArchitecture;
+    readonly entryPoint?: string;
   },
 ): Promise<JsonValue> => {
   const { logger, signal, snapshotPath } = options;
@@ -203,6 +217,12 @@ const runAnalysis = async (
         ...(options.formatHint === undefined
           ? {}
           : { formatHint: options.formatHint }),
+        ...(options.architecture === undefined
+          ? {}
+          : { architecture: options.architecture }),
+        ...(options.entryPoint === undefined
+          ? {}
+          : { entryPoint: options.entryPoint }),
       });
       if (!prepared.ok) return cliError(prepared.error);
       const { snapshot } = prepared.value;
@@ -214,6 +234,12 @@ const runAnalysis = async (
           ...(options.formatHint === undefined
             ? {}
             : { formatHint: options.formatHint }),
+          ...(options.architecture === undefined
+            ? {}
+            : { architecture: options.architecture }),
+          ...(options.entryPoint === undefined
+            ? {}
+            : { entryPoint: options.entryPoint }),
           ...(options.providerId === undefined
             ? {}
             : { providerId: options.providerId }),
@@ -246,6 +272,12 @@ const runAnalysis = async (
         ...(options.formatHint === undefined
           ? {}
           : { formatHint: options.formatHint }),
+        ...(options.architecture === undefined
+          ? {}
+          : { architecture: options.architecture }),
+        ...(options.entryPoint === undefined
+          ? {}
+          : { entryPoint: options.entryPoint }),
         ...(snapshot === undefined ? {} : { snapshot }),
         ...(options.providerId === undefined
           ? {}
@@ -407,6 +439,9 @@ const executeAnalysisTool = async (input: {
         : { analysisProfile: result.value.analysisProfile }),
       rawResult: result.value.rawResult,
       limitations: result.value.limitations,
+      ...(result.value.relationshipCoverage === undefined
+        ? {}
+        : { relationshipCoverage: result.value.relationshipCoverage }),
       locations: result.value.locations,
       evidenceLinks:
         tool === "inspect_artifact"
@@ -440,6 +475,8 @@ const withProcessCancellation = async <Value>(
 const prepareSnapshot = async (options: {
   readonly path: string;
   readonly formatHint?: ExecutableFormatHint;
+  readonly architecture?: BinaryArchitecture;
+  readonly entryPoint?: string;
   readonly snapshotPath: string | undefined;
   readonly signal: AbortSignal;
 }): Promise<
@@ -458,6 +495,12 @@ const prepareSnapshot = async (options: {
     ...(options.formatHint === undefined
       ? {}
       : { formatHint: options.formatHint }),
+    ...(options.architecture === undefined
+      ? {}
+      : { architecture: options.architecture }),
+    ...(options.entryPoint === undefined
+      ? {}
+      : { entryPoint: options.entryPoint }),
   });
   if (!target.ok) return target;
   if (!snapshotMatchesTarget(loaded.value.target, target.value))

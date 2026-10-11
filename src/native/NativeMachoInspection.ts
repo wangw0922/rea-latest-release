@@ -13,6 +13,7 @@ import { parseDyldSymbols } from "./parsers/dyldInfo.js";
 import { parseLipoArchitectures } from "./parsers/lipo.js";
 import { withoutEchoedPathHeader } from "./parsers/echoedPath.js";
 import { parseOtoolLoadCommands } from "./parsers/otool.js";
+import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
 
 interface NativeMachoObservation {
   readonly result: JsonValue;
@@ -107,7 +108,37 @@ export const inspectNativeMacho = async (
   else if (optional.error._tag === "AnalysisCapabilityUnavailableError")
     limitations.push(VTOOL_UNAVAILABLE_LIMITATION);
   else return err(optional.error);
-  const normalized = normalizeMacho(captures, context.invocation, limitations);
+  const otool = captures.find(({ tool }) => tool === "otool");
+  if (otool === undefined) throw new TypeError("Missing otool capture");
+  let load: ReturnType<typeof parseOtoolLoadCommands>;
+  try {
+    load = parseOtoolLoadCommands(sliceOutput(otool));
+  } catch (cause: unknown) {
+    return err(
+      new AnalysisOutputError(
+        "inspect_macho",
+        "Malformed otool load-command output",
+        {
+          cause,
+          capturedOutput: {
+            stdout: otool.stdout,
+            stderr: otool.stderr,
+            truncated: false,
+            stdout_bytes: otool.stdoutBytes,
+            stderr_bytes: otool.stderrBytes,
+            exit_code: otool.exitCode,
+            signal: otool.signal,
+          },
+        },
+      ),
+    );
+  }
+  const normalized = normalizeMacho(
+    captures,
+    context.invocation,
+    limitations,
+    load,
+  );
   const segmentOffset = segmentContainerOffset(
     normalized,
     selectedArchitecture,
@@ -134,10 +165,10 @@ const normalizeMacho = (
   captures: readonly NativeCommandCapture[],
   toInvocation: (capture: NativeCommandCapture) => NativeCommandInvocation,
   additionalLimitations: readonly string[],
+  load: ReturnType<typeof parseOtoolLoadCommands>,
 ) => {
   const byTool = captureLookup(captures);
   const architectures = parseLipoArchitectures(byTool("lipo").stdout);
-  const load = parseOtoolLoadCommands(sliceOutput(byTool("otool")));
   const imports = parseDyldSymbols(
     sliceOutput(byTool("dyld_info", 0)),
     "imports",
@@ -270,7 +301,7 @@ const uniqueSymbols = <Value extends { readonly name: string }>(
   for (const item of items)
     if (!unique.has(item.name)) unique.set(item.name, item);
   return [...unique.values()].sort((left, right) =>
-    left.name.localeCompare(right.name),
+    compareUnicodeCodePoints(left.name, right.name),
   );
 };
 
