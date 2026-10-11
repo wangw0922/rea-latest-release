@@ -68,21 +68,15 @@ selects the npm release, and persistent MCP registrations are pinned to the
 version that performed setup. Installing newer instructions does not update a
 running server or its registration.
 
-The npm release checked on **2026-10-10** was **6.3.0**, published from
-[`74cf9e14`](https://github.com/morluto/rea/commit/74cf9e1401fcd89482fe39c27cc898f5858e9b72),
-with bundled skill version 34. It does not include automatic Pi or Hermes
-registration: `setup --client pi` and `setup --client hermes` reject those IDs
-before writing configuration. Their setup workflows below require a source build
-or a later release containing those integrations; `@latest` alone cannot select
-unpublished changes.
-
-The earlier release checked on **2026-10-07** was **5.0.0** (133 MCP tools), published
-from the fixed checkpoint
-[`b33236ec`](https://github.com/morluto/rea/releases/tag/rea-agents-5.0.0).
-The public CLI, MCP catalog and target-free session, and isolated update from
-4.1.0 to 5.0.0 were verified through npm. The artifact includes Windows native
-controls, Android/JADX and firmware tools, Ghidra function annotations, and
-retained application-Evidence references.
+The npm release checked on **2026-10-11** was **6.4.0**, published from
+[`a56f7bb6`](https://github.com/morluto/rea/commit/a56f7bb668ab23fec8d33f7af353ac7ed2fe1895).
+The actual registry package accepted dry-run setup plans for all 17 client IDs
+listed below, including Qwen Code, Pi and Hermes. OpenCode's plan selected
+`OPENCODE_CONFIG_DIR` even when that directory did not yet exist. These checks
+used an isolated home on macOS with Node 24; they verify planning and argument
+admission, without writing client configuration or establishing live integration
+with every client. This resolves the npm 6.3.0 setup gaps tracked in
+[#1650](https://github.com/morluto/rea/issues/1650).
 
 Main's catalog describes the current code. A source build or a subsequent
 release containing changes after this checkpoint is required for newer
@@ -153,6 +147,13 @@ listed after the table because its connector is not one of these files:
 For GitHub Copilot CLI 1.0.95, `gpt-4.1` model metadata can block ordinary
 chat with REA's full input-schema profile before sending a model request
 (`compaction_static_context_blocked`; [#1554](https://github.com/morluto/rea/issues/1554)).
+For the native offline OpenAI-compatible BYOK adapter, full-profile chat and
+analysis also passed with a distinct `COPILOT_PROVIDER_MODEL_ID` such as
+`rea-gpt-4.1`, `COPILOT_PROVIDER_WIRE_MODEL=gpt-4.1`, and that distinct ID selected
+through `copilot --model rea-gpt-4.1`. The local fixture requested
+`COPILOT_PROVIDER_MAX_PROMPT_TOKENS=1000000`; configure the limit supported by
+your backend. This keeps every full schema and the actual wire model intact.
+It does not establish the effective client budget or fix the built-in-ID path.
 The existing compact profile passed native chat and analysis with the complete
 tool inventory on Linux using a loopback model fixture. After setup, add
 `"REA_MCP_INPUT_SCHEMA_PROFILE": "compact"` to the `env` object of the
@@ -163,9 +164,6 @@ schema constraints; REA still validates complete canonical inputs. Full-profile
 Windows remain unverified; see [native client verification](testing.md).
 
 For [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md),
-automatic setup requires a build containing the integration; npm 6.3.0 does not
-include it. See [released package and main](#released-package-and-main).
-In a supported build,
 setup writes a `type: "stdio"` entry under `mcpServers.rea` in the user-level
 `~/.pi/agent/mcp.json` and installs the bundled skill under `~/.agents/skills`.
 Use `rea setup --client pi --dry-run --json` to inspect the plan, then
@@ -224,10 +222,7 @@ registration. Doctor treats an `enabled: false` entry as active when
 `enabledServers` lists `rea`, as OMP does, unless `disabledServers` also lists
 it. Run setup under each profile that should load REA.
 
-For Hermes, automatic setup also requires a build containing the integration;
-npm 6.3.0 does not include it. See
-[released package and main](#released-package-and-main).
-In a supported build, setup writes a `mcp_servers.rea` entry to `config.yaml`, preserving
+For Hermes, setup writes a `mcp_servers.rea` entry to `config.yaml`, preserving
 comments and unrelated settings. It resolves that file from `HERMES_HOME`, else
 from the platform default Hermes itself uses — `%LOCALAPPDATA%\hermes` on
 Windows, `~/.hermes` elsewhere — including any `HERMES_DATA_DIR_SUFFIX`. Hermes
@@ -360,6 +355,12 @@ Hopper installation or any file write. Declining or pressing Ctrl-C makes no
 changes. Agent configuration writes preserve unrelated entries and comments,
 create backups, use atomic replacement, and verify their result. Setup and
 uninstall retain an existing `.rea.backup` rather than replacing the first snapshot.
+Setup also retains valid environment overrides in REA's existing server entry,
+such as `REA_MCP_INPUT_SCHEMA_PROFILE` and `REA_MCP_MAX_RESPONSE_BYTES`.
+Detected provider settings replace only matching environment keys.
+Setup and doctor report a malformed REA environment map or invalid runtime
+setting before setup writes files. Repair the named setting in the client
+configuration; setup does not silently discard the rest of the map.
 
 After setup, REA reports which agents, analysis tools, and workflow files passed
 its final checks. Restart any agent named in the completion message, then begin
@@ -442,7 +443,7 @@ vendor-defined limits, and a paid license is optional. REA reuses any detected
 installation and preserves Hopper during uninstall.
 
 The supported native host baseline is macOS 12+, Ubuntu 24.04+, Fedora 41+,
-Nobara 44+, 64-bit Arch Linux, or CachyOS. Ghidra and IDA have their own provider-specific
+Nobara 44+, 64-bit Arch Linux, CachyOS, or Omarchy. Ghidra and IDA have their own provider-specific
 host requirements; Windows Ghidra uses the [experimental P0 boundary](windows-ghidra-p0.md).
 
 On macOS, approved setup downloads the official DMG, checks its published size
@@ -712,6 +713,27 @@ is no fixed per-operation or response-size ceiling. Unresolved computed calls
 remain unknown, reference-kind provenance is preserved, and provider-specific
 pseudocode is never treated as original source or Hopper-equivalent text.
 
+### Ghidra import language and analysis seeds
+
+Ghidra detects the language from the executable header. To set it (for example, Borland C++ PE images):
+
+```bash
+export REA_GHIDRA_LANGUAGE_ID="x86:LE:32:default"
+export REA_GHIDRA_COMPILER_SPEC_ID="borlandcpp"   # optional; requires a language
+```
+
+REA passes `-processor`/`-cspec`, checks both against the installation's `.ldefs`, and records them in the analysis profile. DOS imports reject an override.
+
+To seed code that auto-analysis cannot reach (computed jumps, pointers in data):
+
+```bash
+export REA_GHIDRA_SEED_FILE=/absolute/path/to/seeds.tsv
+```
+
+Each line is `address<TAB>kind[<TAB>name]`, where kind is `function`, `code` or `label` (a label needs a name). Addresses are `0x` hex in the default space; `#` lines are comments. A pre-script applies seeds before auto-analysis: functions from the highest address down, then code, then labels. The seed digest is part of the analysis profile, and the session fails if the applied seeds differ. Result limitations report the outcome counts; a seed fails when it overlaps an instruction Ghidra already decoded.
+
+Label seeds can name mapped uninitialized storage such as `.bss`; function and code seeds require initialized bytes.
+
 ### Ghidra heap and CPU controls
 
 Set resource controls in the environment that launches the CLI or MCP server,
@@ -838,7 +860,7 @@ For a client that requires manual configuration, use:
   "mcpServers": {
     "rea": {
       "command": "npx",
-      "args": ["-y", "rea-agents@6.3.0", "mcp"]
+      "args": ["-y", "rea-agents@6.4.0", "mcp"]
     }
   }
 }
