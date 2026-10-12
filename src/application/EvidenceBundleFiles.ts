@@ -21,6 +21,7 @@ import {
 } from "../domain/jsonSerialization.js";
 import { readJsonFile, writeTextParts } from "./JsonFiles.js";
 import { RegularFileCleanupFailure } from "./RegularFileRead.js";
+import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 
 type EvidenceReadFailure =
   | EvidenceFileError
@@ -35,8 +36,9 @@ type EvidenceWriteFailure =
 /** Read and validate an evidence bundle at the caller-supplied path. */
 export const readEvidenceBundle = (
   path: string,
+  signal?: AbortSignal,
 ): Promise<Result<EvidenceBundle, EvidenceReadFailure>> =>
-  readBundle(path, parseEvidenceBundle);
+  readBundle(path, parseEvidenceBundle, signal);
 
 /** Read an authenticated immutable snapshot for a subsequent session import. */
 export const readImmutableEvidenceBundle = (
@@ -105,6 +107,7 @@ export const writeEvidenceBundle = async (
   bundle: EvidenceBundle,
   path: string,
   overwrite: boolean,
+  resources: ArtifactResourceScope,
   signal?: AbortSignal,
 ): Promise<
   Result<
@@ -128,6 +131,7 @@ export const writeEvidenceBundle = async (
     bufferedJsonParts(canonicalJsonParts(checked)),
     path,
     overwrite,
+    resources,
     signal === undefined
       ? undefined
       : { signal, operation: "export_evidence_bundle" },

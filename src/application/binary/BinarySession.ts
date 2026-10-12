@@ -24,7 +24,6 @@ import type {
   BinarySessionPort,
   SavedAnalysisSnapshot,
 } from "./BinarySessionPort.js";
-import { writeAnalysisSnapshot } from "./AnalysisSnapshotFiles.js";
 import {
   SessionProviderRouter,
   type SessionProviderRoute,
@@ -143,14 +142,7 @@ export class BinarySession
         }
       }
     }
-    const profile = this.#active?.profile;
-    return structuredClone(
-      profile !== null &&
-        profile !== undefined &&
-        profile.provider.id === selected.id
-        ? profile.provider
-        : selected,
-    );
+    return structuredClone(selected);
   }
 
   /** External live state cannot be replayed by a direct or composed CLI workflow. */
@@ -376,7 +368,7 @@ export class BinarySession
       await this.#drainCalls(admittedThrough);
       const snapshot = this.exportAnalysisSnapshot();
       if (!snapshot.ok) return snapshot;
-      const written = await writeAnalysisSnapshot(
+      const written = await this.writeAnalysisSnapshot(
         snapshot.value,
         path,
         overwrite,
@@ -421,7 +413,16 @@ export class BinarySession
           );
     this.clearSessionRecords();
     this.#clearRuntimeAvailability();
-    return closed;
+    const fileResources = await this.closeWriteResources();
+    if (!closed.ok && !fileResources.ok)
+      return err(
+        analysisErrorWithCleanupFailure(
+          closed.error,
+          fileResources.error,
+          "close_binary",
+        ),
+      );
+    return closed.ok ? fileResources : closed;
   }
 
   async #retireClient(
@@ -587,6 +588,9 @@ export class BinarySession
     if (!prepared.ok) return prepared;
     const { active, capability, profile, cacheable, cached } = prepared.value;
     if (cached !== undefined) return ok(cached);
+    // A failed reply cannot prove that a dispatched metadata write rolled back.
+    // Stop replay before dispatch, including reads overlapping the write.
+    if (capability.effects.mutatesArtifact) this.invalidateSnapshot();
     const call = active.client.execute(name, arguments_, options);
     const result = await call;
     const profiled = bindExecutionTarget(
@@ -644,8 +648,6 @@ export class BinarySession
         parameters: arguments_,
         execution: execution.value,
       });
-    } else if (profiled.ok && capability.effects.mutatesArtifact) {
-      this.invalidateSnapshot();
     }
     return execution;
   }
