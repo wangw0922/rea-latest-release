@@ -822,6 +822,39 @@ describe("Ghidra result projection", () => {
   });
 });
 
+describe("Ghidra PE CodeView debug symbol limitations", () => {
+  it("projects unapplied companion PDB limitation for PE target with CodeView record", async () => {
+    const ghidra = provider(installationHost(), () => ({
+      start: () => Promise.resolve(ok(sessionInfo())),
+      callTool: () => Promise.resolve(ok(null)),
+      close: () => Promise.resolve(ok(null)),
+    }));
+    const target = {
+      ...peTarget("x86_64"),
+      codeView: {
+        pdbPath: "C:\\projects\\app\\build\\test.pdb",
+        pdbFileName: "test.pdb",
+        guid: "01234567-89ab-cdef-0123-456789abcdef",
+        age: 1,
+      },
+    };
+    const profile = await ghidra.resolveAnalysisProfile(target);
+    if (!profile.ok || profile.value.profile === null)
+      throw new Error("expected PE profile");
+    const client = ghidra.createClient(target, profile.value.profile);
+    const health = await client.execute("health", {});
+    expect(health).toMatchObject({
+      ok: true,
+      value: {
+        limitations: expect.arrayContaining([
+          'The target references debug symbols "test.pdb" (GUID 01234567-89ab-cdef-0123-456789abcdef, age 1) that were not applied; procedure names are analysis-generated.',
+        ]),
+      },
+    });
+    await client.close();
+  });
+});
+
 describe("Ghidra relationship coverage", () => {
   it("marks the full direct call-reference response complete while keeping static caveats", async () => {
     const ghidra = provider(installationHost(), () => ({
@@ -1539,6 +1572,113 @@ const sessionInfo = () => ({
     default_address_space: "ram",
     sha256: "a".repeat(64),
   },
+});
+
+describe("Ghidra PDB coverage", () => {
+  it.each([
+    { name: "missing bridge report", pdb: undefined, warns: true },
+    {
+      name: "report without a PDB reference",
+      pdb: {
+        file: null,
+        guid: null,
+        age: null,
+        signature: null,
+        version: null,
+        loaded: null,
+      },
+      warns: false,
+    },
+  ])("distinguishes $name in direct PE searches", async ({ pdb, warns }) => {
+    const ghidra = provider(installationHost(), () => ({
+      start: () =>
+        Promise.resolve(
+          ok(pdb === undefined ? sessionInfo() : { ...sessionInfo(), pdb }),
+        ),
+      callTool: () => Promise.resolve(ok([])),
+      close: () => Promise.resolve(ok(null)),
+    }));
+    const target = executableTarget("pe", "x86_64");
+    const resolved = await ghidra.resolveAnalysisProfile(target);
+    if (!resolved.ok || resolved.value.profile === null)
+      throw new Error("Expected a PE profile");
+    const client = ghidra.createClient(target, resolved.value.profile);
+    try {
+      const searched = await client.execute("search_procedures", {
+        pattern: "add_numbers",
+      });
+      if (!searched.ok) throw searched.error;
+      expect(searched.value.result).toEqual([]);
+      const warnings = searched.value.limitations.filter((limitation) =>
+        limitation.includes("PDB"),
+      );
+      expect(warnings).toEqual(
+        warns
+          ? [
+              "Ghidra did not report PDB attributes; debug-symbol coverage is unknown.",
+            ]
+          : [],
+      );
+    } finally {
+      await client.close();
+    }
+  });
+  const pdb = {
+    file: "C:\\build\\fixture.pdb",
+    guid: "01234567-89AB-CDEF-0123-456789ABCDEF",
+    age: "a",
+    signature: null,
+    version: "RSDS",
+    loaded: false as boolean | null,
+  };
+  it.each([false, null, true])(
+    "carries PDB load state %s into direct search and health Evidence",
+    async (loaded) => {
+      let starts = 0;
+      const ghidra = provider(installationHost(), () => ({
+        start: () => {
+          starts += 1;
+          return Promise.resolve(
+            ok({ ...sessionInfo(), pdb: { ...pdb, loaded } }),
+          );
+        },
+        callTool: () => Promise.resolve(ok([])),
+        close: () => Promise.resolve(ok(null)),
+      }));
+      const target = executableTarget("pe", "x86_64");
+      const resolved = await ghidra.resolveAnalysisProfile(target);
+      if (!resolved.ok || resolved.value.profile === null)
+        throw new Error("Expected a PE profile");
+      const client = ghidra.createClient(target, resolved.value.profile);
+      // No preceding health call: a name search must establish symbol coverage itself.
+      const searched = await client.execute("search_procedures", {
+        pattern: "add_numbers",
+      });
+      expect(starts).toBe(1);
+      if (!searched.ok) throw searched.error;
+      expect(searched.value.result).toEqual([]);
+      const health = await client.execute("health", {});
+      if (!health.ok) throw health.error;
+      expect(health.value.result).toMatchObject({ pdb: { ...pdb, loaded } });
+      for (const observation of [searched.value, health.value]) {
+        const limitations = observation.limitations.join("\n");
+        if (loaded === true) {
+          expect(limitations).toContain("loaded PDB");
+          expect(limitations).toContain("not an independent PDB identity");
+          expect(limitations).toContain("empty name search does not prove");
+        } else {
+          expect(limitations).toContain(pdb.file);
+          expect(limitations).toContain(pdb.guid);
+          expect(limitations).toContain("age (hex) a");
+          expect(limitations).toContain("list_procedures");
+          expect(limitations).toContain(
+            loaded === null ? "unknown" : "not loaded",
+          );
+        }
+      }
+      await client.close();
+    },
+  );
 });
 
 const executableTarget = (
