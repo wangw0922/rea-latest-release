@@ -10,7 +10,6 @@ import {
 import {
   collectSemanticModuleLink,
   collectSemanticCallable,
-  semanticImportEqualsSpecifier,
   collectSemanticReferences,
   collectSemanticReferencesSteps,
   immutableSemanticBindings,
@@ -47,7 +46,10 @@ import { semanticRequireOrigin } from "./javascriptSemanticRequireOrigin.js";
 import { semanticBundledRequireOrigin } from "./javascriptBundledRequireOrigin.js";
 import { collectSemanticMemberMutationsSteps } from "./javascriptSemanticMemberMutations.js";
 import { indexJavaScriptAmbientWritesSteps } from "./javascriptSemanticAmbientWrites.js";
-import { hasUncertainTypeOnlyModuleSideEffect } from "./javascriptModuleDeclaration.js";
+import {
+  hasUncertainTypeOnlyModuleSideEffect,
+  semanticImportEqualsSpecifier,
+} from "./javascriptModuleDeclaration.js";
 import {
   collectSemanticReturns,
   resolveSemanticModuleCallables,
@@ -62,7 +64,6 @@ import {
 } from "./javascriptElectronMemberWrites.js";
 import { range } from "./javascriptStaticAnalysisHelpers.js";
 import { semanticCoverage } from "./javascriptSemanticCoverage.js";
-import { semanticResourceLimitsIn } from "./javascriptSemanticResourceLimits.js";
 import {
   parseJavaScriptSource,
   type ParsedJavaScriptSource,
@@ -197,12 +198,7 @@ export function* analyzeParsedJavaScriptSemanticsSteps(
     ...derived,
     coverage: semanticCoverage(
       parserPartial,
-      semanticResourceLimitsIn([
-        ...bindings.map(({ value }) => value),
-        ...callables.flatMap((callable) =>
-          callable.returnSites.map(({ value }) => value),
-        ),
-      ]),
+      [...state.valueResourceLimits].sort(),
     ),
     limitations: [
       ...(parserPartial
@@ -698,6 +694,7 @@ const createState = (
   return {
     program,
     staticImportResolutionMode,
+    valueResourceLimits: new Set(),
     parentsByNode: new WeakMap(),
     scopes: [root],
     scopesById: new Map([[root.scopeId, root]]),
