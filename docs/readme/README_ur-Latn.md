@@ -196,6 +196,7 @@ Mazeed tools aur host support target par depend karte hain:
 | Godot PCK               | Archive inventory aur extraction, original header/directory facts aur selected content identities | Built-in static formats 2, 3 aur 4; Godot zaroori nahi                                                                            |
 | Rust binaries           | Embedded cargo-auditable crate names, versions, sources aur dependency edges                      | Built-in static ELF/PE/thin Mach-O inspection; [Rust binaries](../rust-binaries.md)                                               |
 | PE certificates         | Authenticode WIN_CERTIFICATE entries aur PKCS#7 signer/X.509 identity fields                      | Built-in static PE inspection; [PE certificates](../pe-certificates.md)                                                           |
+| PE imports              | Import aur delay-load DLL names, ordinals, IAT RVAs aur pefile import hash                        | Built-in static PE inspection; [PE imports](../pe-imports.md)                                                                     |
 | ELF notes               | PT_NOTE/SHT_NOTE owners, types, GNU build-id aur ABI-tag fields                                   | Built-in static ELF inspection; [ELF notes](../elf-notes.md)                                                                      |
 | Erlang BEAM             | IFF chunks, atoms, exports, imports, lambdas aur Code header                                      | Built-in static BEAM inspection; [Erlang BEAM](../erlang-beam.md)                                                                 |
 | WASM artifact           | Validation, sections, exact import/export WAT forms aur decoded WAT                               | Aapka diya hua WABT 1.0.42; `inspect_wasm_artifact`                                                                               |
@@ -245,7 +246,12 @@ Latest npm release ke baad add hone wale features ki
 
 ## Amli misaalein
 
-[![DX-Ball sound-pan, Notion clipboard-bridge aur TH04 bullet-ring case studies ki tasveerein](../assets/rea-showcases.png)](https://rea.tools/showcase/)
+<a href="https://rea.tools/showcase/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/rea-showcases-dark.svg" />
+    <img alt="DX-Ball sound-pan, Notion clipboard-bridge aur TH04 bullet-ring case studies ki tasveerein" src="../assets/rea-showcases.svg" />
+  </picture>
+</a>
 
 ### DX-Ball: sound-pan calculation dobara banayein
 

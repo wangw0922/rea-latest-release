@@ -442,6 +442,11 @@ A read with repeated query values uses replay, because the state query model
 does not infer repeated-parameter semantics. A repeated-query write is refused
 before it can change state for the same reason.
 
+List counters retain their recorded number or digit-string representation.
+Changing a digit-string counter preserves its observed zero-padding width;
+query-total inference remains limited to canonical decimal counts. Path matching
+uses the same segment parser as extraction, preserving empty internal segments.
+
 An item or list view that always spells a clock field otherwise than the
 entity's stored value names that spelling in `clock_formats`, and a value it
 never recorded, such as a created entity's clock, is rendered in it: a list that
@@ -802,8 +807,14 @@ remain unchanged. Clock-format comparison and respelling recognize four-digit
 ISO years `0000`–`0099` as well as later years, with normal calendar validation.
 Respelling preserves the original value when the target zone would require a year
 outside `0000`–`9999`; generated writes refuse a clock outside that format.
-Capture-state extraction still uses millisecond coordinates for request intervals
-and their ordering, and generated-clock progression compares milliseconds.
+Capture-state start ordering uses the same exact recorded timestamp facts,
+including minute-only times and fractions longer than nine digits. Recorded
+spellings may use `T` or a space, `Z` or an extended/compact offset, or no zone
+(interpreted as UTC). Equal starts use ordinal order; a missing or unreadable
+start makes the capture use record order. Request interval and overlap checks
+still use millisecond coordinates, and generated-clock progression compares
+milliseconds. Derived ISO clock formats still require seconds and at most nine
+fractional digits.
 
 Comparison keeps response representations distinct: JSON values compare structurally, text compares as text, and a
 retained base64 body compares by bytes (including with UTF-8 text carrying those same bytes), never by its base64
@@ -830,16 +841,16 @@ with a JSON pointer and both values cut short:
 | `unmapped-id`   | The application answered with success and the environment did not, for a path id the comparison never mapped |
 
 What a probe did not observe is not counted as the application's behaviour. A record without a usable request line,
-such as a redacted URL or a transaction the capture cannot attribute, is not replayed, nor is a request to another
-origin than the application's (`other-origin`: the probe's origin with the most JSON-like records, as the manifest
+such as a redacted URL or a transaction the capture cannot attribute, is not replayed, nor is a request to an origin different
+from the application's (`other-origin`: the probe's origin with the most JSON-like records, as the manifest
 chooses its own), and a request with no recorded
 answer is made, since it may have changed the application, but not compared: each probe lists them under `unobserved` with the reason, and the summary counts them. A live
 body the probe did not record compares by status only and is counted as `unobserved_bodies`, unless the answer never
 carries one (204, 205, 304, `HEAD`). A browser probe captured without `capture.network.response_body` is refused, as
 is one that makes POST, PUT or PATCH calls without `capture.network.request_body`.
 
-Agreement covers only the calls the probes make, after the mapping the answers allow. Values compared by form, clocks
-and generated values, can still differ in content, and an equal answer after a write shows the state matched for that
+Agreement covers only the calls the probes make, after the mapping the answers allow. Clocks compared by format
+and fields normalized under explicit generation rules can still differ in content, and an equal answer after a write shows the state matched for that
 read, not that the write had no other effect.
 
 ## Compatibility verification

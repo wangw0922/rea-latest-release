@@ -939,7 +939,7 @@ describe("managed comparison target identity", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error._tag).toBe("EvidenceIntegrityError");
+    expect(result.error._tag).toBe("AnalysisArtifactChangedError");
     expect(result.error.message).toContain(leftPath);
   });
 });

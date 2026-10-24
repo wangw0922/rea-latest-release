@@ -1,3 +1,8 @@
+import { MachoLoadCommandCursor } from "../../domain/apple/machoLoadCommands.js";
+import {
+  MAX_JVM_CLASS_IDENTITY_BYTES,
+  JVM_CLASS_IDENTITY_LIMIT_REASON,
+} from "../../domain/apple/jvmClassFile.js";
 import type {
   MachoDependency,
   MachoImageFacts,
@@ -9,7 +14,6 @@ import {
   type MachoVersionMinPlatform,
 } from "../../domain/apple/machoPlatform.js";
 import {
-  machoLoadCommandAlignment,
   classifyFatContainerIdentity,
   readFatContainerHeader,
   readFatSliceDeclarations,
@@ -139,7 +143,7 @@ export const readMachoImage = async (
     const view = viewOf(head);
     const magic = view.getUint32(0, false);
     let header: ReturnType<typeof readFatContainerHeader>;
-    if (magic === FAT_MAGIC && size <= MAX_LOAD_COMMAND_BYTES) {
+    if (magic === FAT_MAGIC && size <= MAX_JVM_CLASS_IDENTITY_BYTES) {
       const complete = await readAt(0, size);
       header =
         complete.byteLength === size
@@ -177,10 +181,10 @@ export const readMachoImage = async (
         // A large CAFEBABE input whose bounded prefix resembles an invalid
         // known-CPU FAT table remains unknown until its JVM identity can be
         // checked; do not turn the resource limit into a malformed claim.
-        if (magic === FAT_MAGIC && size > MAX_LOAD_COMMAND_BYTES)
+        if (magic === FAT_MAGIC && size > MAX_JVM_CLASS_IDENTITY_BYTES)
           throw new MachoFormatIssue(
             "unsupported",
-            "FAT/JVM identity is unresolved because the class identity scan exceeds the 16 MiB limit",
+            JVM_CLASS_IDENTITY_LIMIT_REASON,
           );
         throw new MachoFormatIssue(identity.category, identity.reason);
       }
@@ -396,7 +400,6 @@ const decodeCommands = (
   )[];
   readonly maxVmOffset: bigint;
 } => {
-  const view = viewOf(bytes);
   const slice: MachoSlice = {
     architecture: architectureName(header.cpuType, header.cpuSubtype),
     slice_offset: header.sliceOffset,
@@ -424,24 +427,17 @@ const decodeCommands = (
   let unreadableSegment: number | undefined;
   let lazyInfo = false;
   let lazyInfoCount = 0;
-  let offset = 0;
-  for (let index = 0; index < header.commandCount; index++) {
-    if (offset + 8 > bytes.byteLength)
-      throw new MachoFormatIssue(
-        "malformed",
-        `load command ${index} starts beyond sizeofcmds`,
-      );
-    const command = view.getUint32(offset, true);
-    const size = view.getUint32(offset + 4, true);
-    if (
-      size < 8 ||
-      size % machoLoadCommandAlignment(header.wide) !== 0 ||
-      offset + size > bytes.byteLength
-    )
-      throw new MachoFormatIssue(
-        "malformed",
-        `load command ${index} at offset ${offset} has invalid cmdsize ${size}`,
-      );
+  const commands = new MachoLoadCommandCursor({
+    wide: header.wide,
+    littleEndian: true,
+    commandCount: header.commandCount,
+    commandBytes: bytes.byteLength,
+  });
+  while (commands.nextOffset !== null) {
+    const offset = commands.nextOffset;
+    const frame = commands.read(bytes.subarray(offset, offset + 8));
+    if (!frame.ok) throw new MachoFormatIssue("malformed", frame.error);
+    const { index, command, size } = frame.value;
     const body = bytes.subarray(offset, offset + size);
     if (command === LC_SEGMENT || command === LC_SEGMENT_64) {
       const span = readSegmentSpan(body, command === LC_SEGMENT_64);
@@ -459,13 +455,9 @@ const decodeCommands = (
     }
     const decoded = decodeCommand(command, body, index, slice);
     if (decoded !== undefined) dependencies.push(decoded);
-    offset += size;
   }
-  if (offset !== bytes.byteLength)
-    throw new MachoFormatIssue(
-      "malformed",
-      `load commands declare ${header.commandCount} commands but sizeofcmds holds ${bytes.byteLength} bytes`,
-    );
+  const complete = commands.finish();
+  if (!complete.ok) throw new MachoFormatIssue("malformed", complete.error);
   if (lazyInfo && unreadableSegment !== undefined)
     throw new MachoFormatIssue(
       "malformed",
