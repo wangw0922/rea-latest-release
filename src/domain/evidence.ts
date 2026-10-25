@@ -29,8 +29,7 @@ import {
   immutableJsonSnapshotMember,
   isImmutableJsonSnapshot,
 } from "./immutableJson.js";
-import { digestSchema } from "./../domain/digests.js";
-import { prefixedDigestSchema } from "./../domain/digests.js";
+import { digestSchema, prefixedDigestSchema } from "./../domain/digests.js";
 import {
   relationshipCoverageSchema,
   type RelationshipCoverage,
@@ -242,13 +241,14 @@ type ExecutionEnvironment = z.infer<typeof executionEnvironmentSchema>;
 
 export type EvidenceProvider = Readonly<z.output<typeof providerSchema>>;
 
-export interface EvidenceObservation {
+/** Payloads admitted and snapshotted by the ordinary Evidence constructor. */
+export interface EvidenceObservationInput {
   readonly predicateType?: string;
   readonly operation: string;
-  readonly parameters: Readonly<Record<string, JsonValue>>;
-  readonly result: JsonValue;
+  readonly parameters: unknown;
+  readonly result: unknown;
   readonly analysisProfile?: AnalysisProfileCommitment;
-  readonly rawResult?: JsonValue;
+  readonly rawResult?: unknown;
   readonly confidence?: "observed" | "derived" | "inferred";
   readonly authority?: EvidenceAuthority;
   readonly environment?: ExecutionEnvironment | null;
@@ -258,6 +258,13 @@ export interface EvidenceObservation {
   readonly subjectUnavailableReason?: string;
   readonly locations?: readonly EvidenceLocation[];
   readonly evidenceLinks?: readonly string[];
+}
+
+/** Producer facts that already promise JSON, including cooperative Evidence input. */
+export interface EvidenceObservation extends EvidenceObservationInput {
+  readonly parameters: Readonly<Record<string, JsonValue>>;
+  readonly result: JsonValue;
+  readonly rawResult?: JsonValue;
 }
 
 type EvidenceWithoutId = Omit<EvidenceSchemaValue, "evidence_id">;
@@ -403,11 +410,11 @@ export interface EvidenceCreationOptions {
   readonly immutable?: boolean;
 }
 
-/** Build deterministic Evidence from an immutable artifact subject. */
+/** Admit payloads into deterministic Evidence bound to an immutable artifact subject. */
 export const createEvidence = (
   target: EvidenceSubjectTarget | BinaryTarget | undefined,
   provider: EvidenceProvider,
-  observation: EvidenceObservation,
+  observation: EvidenceObservationInput,
   options?: EvidenceCreationOptions,
 ): Evidence => {
   const { normalized, sharedResult } = normalizeEvidenceObservation(
@@ -460,7 +467,7 @@ export function* createImmutableEvidenceSteps(
 const normalizeEvidenceObservation = (
   target: EvidenceSubjectTarget | BinaryTarget | undefined,
   provider: EvidenceProvider,
-  observation: EvidenceObservation,
+  observation: EvidenceObservationInput,
 ) => {
   const subject =
     target === undefined
@@ -509,7 +516,7 @@ const normalizeEvidenceObservation = (
       : { relationship_coverage: observation.relationshipCoverage }),
     locations: [...(observation.locations ?? [])],
     evidence_links: [...(observation.evidenceLinks ?? [])],
-  } satisfies JsonValue;
+  };
   const sharedResult =
     typeof observation.result === "object" &&
     observation.result !== null &&
