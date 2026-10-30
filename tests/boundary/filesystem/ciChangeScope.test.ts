@@ -738,6 +738,14 @@ it.each([
     { code: false, ghidra_bridge: true, runtime: false, package: false },
   ],
   [
+    "tests/conformance/ghidra/ReaArmContextProbe.java",
+    { ghidra_bridge: true, runtime: false, package: false },
+  ],
+  [
+    "tests/conformance/ghidra/ReaDecodeProbe.java",
+    { ghidra_bridge: true, runtime: false, package: false },
+  ],
+  [
     "bridge/ghidra/Example.java",
     {
       code: true,
@@ -1612,7 +1620,7 @@ const workflowFile = async (name: string): Promise<unknown> =>
 
 const scopesSchema = z.object({
   CI_FLAGS: z.array(z.string()),
-  SCOPES: z.record(z.string(), z.array(z.string())),
+  CI_LANES: z.record(z.string(), z.object({ paths: z.array(z.string()) })),
   MANUAL_VERIFIERS: z.array(z.string()),
 });
 
@@ -1634,7 +1642,7 @@ const stepRuns = z.object({
 });
 
 it("owns every explicit native-host test path with the lane that runs it", async () => {
-  const { SCOPES } = await loadScopes();
+  const { CI_LANES } = await loadScopes();
   const ci = stepRuns.parse(await workflowFile("ci.yml"));
   const listed = (job: string) =>
     (ci.jobs[job]?.steps ?? [])
@@ -1643,7 +1651,9 @@ it("owns every explicit native-host test path with the lane that runs it", async
   const unowned = (job: string, scope: string) =>
     listed(job).filter(
       (path) =>
-        !(SCOPES[scope] ?? []).some((pattern) => matchesGlob(path, pattern)),
+        !(CI_LANES[scope]?.paths ?? []).some((pattern) =>
+          matchesGlob(path, pattern),
+        ),
     );
   expect(listed("apple-artifacts").length).toBeGreaterThan(0);
   expect(listed("windows-curated").length).toBeGreaterThan(0);
