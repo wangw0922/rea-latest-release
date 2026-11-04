@@ -55,6 +55,7 @@ import {
 /** Shared analysis commitments for raw and header-selected imports. */
 const sharedAnalysisSemantics = {
   annotation_policy: "atomic-function-entry-metadata-v1",
+  byte_search_boundary: "contiguous-eligible-initialized-blocks-v1",
   load_image_observations: "source-mappings-entry-context-relocation-symbol-v3",
   function_body_evidence: "complete-inclusive-ranges-v1",
   function_references: "complete-body-and-entry-reference-manager-v3",
@@ -474,11 +475,13 @@ export const existingGhidraAnalysisProfile = (
   target: BinaryTarget,
   provider: Parameters<typeof createAnalysisProfile>[0],
   project: JsonValue,
-) =>
-  createAnalysisProfile(provider, {
+) => {
+  const mipsElf = ghidraMipsProfileParameters(target).mips_elf;
+  return createAnalysisProfile(provider, {
     target_kind: target.kind,
     target_format: target.format,
     architecture: target.architecture ?? null,
+    ...(mipsElf === undefined ? {} : { mips_elf: mipsElf }),
     import_mode: "existing-project-private-copy-v1",
     ...sharedAnalysisSemantics,
     annotation_policy: "read-only-existing-project-v1",
@@ -487,3 +490,4 @@ export const existingGhidraAnalysisProfile = (
     no_return_repair: "disabled-existing-project",
     process_launch: "inspected-jvm-launch-support-v1",
   });
+};
