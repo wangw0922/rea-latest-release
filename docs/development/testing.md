@@ -186,6 +186,9 @@ the caller's reason. Keep focused boundary and lifecycle tests for those facts.
 operation names, schemas or types; display-only selection remains allowed.
 `rea/no-fixture-root-cleanup` follows `const` fixture-root aliases into teardown
 deletion; mutable bindings and mixed root arrays remain outside its scope.
+`rea/project-wait-deadline` resolves Vitest's `vi` and `expect` bindings,
+including aliases and namespace imports; a shadowed local or a fixture method
+with the same name is not reported.
 
 `rea/no-shared-module-mock` resolves Vitest import bindings before rejecting
 module mocks in projects without per-file isolation. The test-project definitions
@@ -316,6 +319,18 @@ child fails with its captured output. Pass `timeoutMs` only when the child's dea
 behavior under test. Derive an explicit deadline only when a test must outlive
 an operation deadline whose diagnostics it checks.
 
+Waits follow the same policy; Vitest's one-second `expect.poll` and
+`vi.waitFor` defaults assume a host's speed. A wait may take as long as its
+test may run, less the reporting reserve: projects configure `expect.poll`
+that way, and `waitFor` from `tests/support/testWait.ts` replaces `vi.waitFor`.
+Fixture waits such as `awaitAcknowledgement` default to the same deadline.
+`expect.poll` keeps its project's budget in a `long-running` test, while
+`waitFor` follows the deadline the tag applies.
+`rea/project-wait-deadline` rejects `vi.waitFor` and explicit poll timeouts. When promptness is the behavior under test, such as
+cancellation that must preempt a slower production deadline, a wait timeout is
+not its oracle: order the condition before releasing the gate that would
+otherwise satisfy it, or compare elapsed time with the deadline it must beat.
+
 Keep capacity fixtures intact when diagnosing a test failure. For byte equality
 of large buffers, use `Buffer.equals` or `Buffer.compare`; a generic structural
 diff can allocate far more than the production operation.
@@ -360,11 +375,17 @@ The process restarts when the environment changes, after 32 commands, or when
 the worker reports a resident set of at least 1 GiB. A fatal worker failure
 or a broken session frame retires that process and waits for it to exit before
 the next command starts.
-`cli.run` still starts a fresh process, including stdin and explicit deadlines.
-`runFileCli` uses the file session for commands that have neither. Go binary,
-IL2CPP metadata, and dylib-resolution commands use that session. File teardown
-stops the shared CLI process, including startup still in flight, and does not
-open another after close.
+In a `cliTest` file, `cli.run` uses that shared process when it reports the
+command exactly as a fresh `rea` process would. Both run the same one-shot
+owner (`src/cliOneShot.ts`), and the shared process presents the launcher's
+entrypoint. A command starts a fresh process instead when it supplies stdin or
+an explicit deadline, enters MCP or the MCP doctor (which the launcher routes
+first), sets `NODE_OPTIONS`, or enables logging, which writes outside the
+per-command capture. Pass `freshProcess: true` for process-level facts such as
+startup, signals, or exit, and keep one fresh check beside reused cases where
+dispatch itself is under test. `createTestCli` drivers always start a fresh
+process. File teardown stops the shared CLI process, including startup still in
+flight, and does not open another after close.
 `exportedFunctionBindingsCli.test.ts` uses the shared compiled CLI session for
 its file and compares its JSON command results with the MCP session. It selects
 20-second startup and command deadlines; other callers retain their existing
@@ -1017,8 +1038,8 @@ partial diagnostics and preflights do not establish complete mutation outcomes
 or qualify the release revision for mutation coverage.
 
 Fast CI starts the source-only projects after classification, independently of
-build and static checks, and runs eight built-dependent shards after the build.
-Those nine test jobs still select every portable test. Full qualification keeps six
+build and static checks, and runs twelve built-dependent shards after the build.
+Those thirteen test jobs still select every portable test. Full qualification keeps six
 complete Vitest shards with coverage. Neither tier retries tests. Canonical
 project ownership lives in `scripts/lib/test-projects.mjs`, shared by Vitest,
 CI group execution, and development-test preparation. A test importing compiled
@@ -1124,8 +1145,8 @@ memory usage, or billing. Step names identify samples, not complete transfer
 costs. Its queue, execution, and failures are independent of the required gate
 and publication. CPU time and peak process-family memory are not measured by this API.
 
-The build job saves portable Turbo outputs across runs. Eight Linux real-system
-lanes reuse its current-run artifact; standalone dispatches restore the cross-run cache. The shared action
+The build job saves portable Turbo outputs across runs. Linux real-system lanes
+that pass `build_cache_artifact` reuse its current-run artifact; standalone dispatches restore the cross-run cache. The shared action
 derives its key from `test:prepare --dry=json` task hashes, runner OS and
 architecture, `.npmrc`, `.nvmrc`, and the lockfile; test-only changes can reuse compiled outputs. Every
 build and verification command still runs, so Turbo checks task inputs and
