@@ -269,22 +269,73 @@ interface AmbientStoredReferences {
   readonly widened: Set<WidenedStoreGroup>;
 }
 
+type AmbientCallResult =
+  | { readonly kind: "prototype"; readonly target: t.Node }
+  | { readonly kind: "array-iterator"; readonly receiver?: t.Node };
+
+const ambientResultCallee = (
+  node: t.Node,
+  escapedContents: boolean,
+): t.Node | undefined =>
+  t.isCallExpression(node) ||
+  t.isOptionalCallExpression(node) ||
+  t.isNewExpression(node)
+    ? node.callee
+    : t.isTaggedTemplateExpression(node)
+      ? node.tag
+      : escapedContents && (t.isFunction(node) || t.isClass(node))
+        ? node
+        : undefined;
+
 interface AmbientReferenceFacts {
   readonly stores: WeakMap<t.Node, AmbientStoredReferences>;
-  readonly callResult: (
-    node: t.CallExpression | t.OptionalCallExpression,
-  ) =>
-    | { readonly kind: "prototype"; readonly target: t.Node }
-    | { readonly kind: "array-iterator"; readonly receiver?: t.Node }
-    | undefined;
+  readonly callResult: (node: t.CallExpression | t.OptionalCallExpression) => {
+    readonly result: AmbientCallResult | undefined;
+    readonly settled: boolean;
+  };
   readonly freshObject: (node: t.Node) => boolean;
   readonly arrayIteratorReceiver: (node: t.Node) => boolean;
 }
 
+interface WidenedSummarySlot {
+  readonly word: number;
+  readonly bit: number;
+}
+
+/** Index covered roots in the direction queried by the live walk. */
+class WidenedSummaryCoverage {
+  readonly #roots = new WeakMap<t.Node, Map<number, number>>();
+  #nextSlot = 0;
+
+  register(roots: Iterable<t.Node>): WidenedSummarySlot {
+    const index = this.#nextSlot++;
+    const word = Math.floor(index / 32);
+    const bit = 1 << (index % 32);
+    for (const root of roots) {
+      let memberships = this.#roots.get(root);
+      if (memberships === undefined) {
+        memberships = new Map();
+        this.#roots.set(root, memberships);
+      }
+      memberships.set(word, (memberships.get(word) ?? 0) | bit);
+    }
+    return { word, bit };
+  }
+
+  covered(root: t.Node, active: ReadonlyMap<number, number>): boolean {
+    if (active.size === 0) return false;
+    const memberships = this.#roots.get(root);
+    if (memberships === undefined) return false;
+    for (const [word, bits] of memberships)
+      if ((bits & (active.get(word) ?? 0)) !== 0) return true;
+    return false;
+  }
+}
+
 interface WidenedStoreEffects {
   readonly frontier: ReadonlySet<t.Node>;
-  readonly roots: WeakMap<t.Node, AmbientPath | null>;
-  readonly paths: readonly AmbientPath[];
+  readonly slot: WidenedSummarySlot;
+  readonly paths: ReadonlyMap<string, AmbientPath>;
   readonly unknownReasons: readonly AmbientIdentityUnknownReason[];
   readonly projectedSpread: boolean;
 }
@@ -340,6 +391,7 @@ export const createAmbientPathResolver = (
   const returnedReferences = createSemanticReturnedReferences(state);
   // Group values are read at their own sites. Once reference stores settle,
   // their any-depth effects are independent of the outer capture and suffix.
+  const coverage = new WidenedSummaryCoverage();
   const widenedEffects = new WeakMap<WidenedStoreGroup, WidenedStoreEffects>();
   const widenedEscapes = new WeakMap<WidenedStoreGroup, WidenedStoreEffects>();
   const resolve = (
@@ -360,7 +412,14 @@ export const createAmbientPathResolver = (
   ): AmbientResolution => {
     const prior = possibleWrites ? undefined : cached.get(node);
     if (prior !== undefined) return prior;
-    const frontier = summary === undefined ? undefined : new Set<t.Node>();
+    const summaryWalk =
+      summary === undefined
+        ? undefined
+        : {
+            frontier: new Set<t.Node>(),
+            roots: new Map<t.Node, AmbientPath | null>(),
+          };
+    const frontier = summaryWalk?.frontier;
     const result = new Map<string, AmbientPath>();
     const callerPaths = new Map<string, AmbientPath>();
     let hasLocalIdentity = false;
@@ -413,7 +472,7 @@ export const createAmbientPathResolver = (
     const expanded =
       receiver?.kind === "widened"
         ? receiver.expanded
-        : new WeakMap<t.Node, AmbientPath | null>();
+        : (summaryWalk?.roots ?? new WeakMap<t.Node, AmbientPath | null>());
     const expandedAtCapture =
       receiver?.kind === "widened" && capture !== undefined
         ? new WeakMap<t.Node, AmbientPath | null>()
@@ -421,7 +480,7 @@ export const createAmbientPathResolver = (
     const queuedGroups = new Set<WidenedStoreGroup>();
     // Apply summaries in worklist order. A completed summary dominates later
     // visits to its roots just as expanding them at any depth would.
-    const summarizedRoots: WeakMap<t.Node, AmbientPath | null>[] = [];
+    const activeSummaries = new Map<number, number>();
     // Array-receiver reads filter stores at their capture. Tentative spread
     // reads can restore a finite prototype path from an any-depth projection.
     const summarizeGroups =
@@ -448,7 +507,7 @@ export const createAmbientPathResolver = (
         if (
           root !== undefined &&
           ((readsAtSelf ? expanded : expandedAtCapture).get(root) === null ||
-            summarizedRoots.some((roots) => roots.has(root)))
+            coverage.covered(root, activeSummaries))
         )
           return;
       }
@@ -507,13 +566,13 @@ export const createAmbientPathResolver = (
           );
         }
         if (effects !== undefined) {
-          for (const path of effects.paths)
-            result.set(JSON.stringify(path), path);
+          for (const [key, path] of effects.paths) result.set(key, path);
           for (const reason of effects.unknownReasons)
             unknownReasons.add(reason);
           if (observes === "ambient-effects" && effects.projectedSpread)
             projectedSpread = true;
-          summarizedRoots.push(effects.roots);
+          const { word, bit } = effects.slot;
+          activeSummaries.set(word, (activeSummaries.get(word) ?? 0) | bit);
           for (const next of effects.frontier) queue(next, undefined, true);
         }
         continue;
@@ -528,19 +587,26 @@ export const createAmbientPathResolver = (
           memberPaths.set(current.node, memberPath);
         }
         const { root, members } = memberPath;
-        // Returned references and iterator receivers can depend on effects
-        // retained since the previous query. Re-enter them in the live walk.
+        // A settled dispatch and source-local return graph can be folded
+        // into the shared traversal. Keep effect-sensitive captures on the
+        // live frontier, including the array-receiver check of iterator calls.
+        const isCall =
+          t.isCallExpression(root) || t.isOptionalCallExpression(root);
+        const callee = possibleWrites
+          ? ambientResultCallee(root, escapedContents)
+          : undefined;
+        const observedCall =
+          frontier !== undefined && isCall
+            ? facts?.callResult(root)
+            : undefined;
         if (
           frontier !== undefined &&
-          (t.isCallExpression(root) ||
-            t.isOptionalCallExpression(root) ||
-            t.isNewExpression(root) ||
-            t.isTaggedTemplateExpression(root) ||
-            (escapedContents && (t.isFunction(root) || t.isClass(root))) ||
-            (t.isObjectExpression(root) &&
-              root.properties.some((property) =>
-                t.isObjectMethod(property, { kind: "get" }),
-              )))
+          ((isCall &&
+            (observedCall?.settled !== true ||
+              observedCall.result?.kind === "array-iterator")) ||
+            (callee !== undefined &&
+              observedCall?.result?.kind !== "prototype" &&
+              returnedReferences.observesAmbientEffects(callee)))
         ) {
           frontier.add(root);
           resolvedIdentity = true;
@@ -561,7 +627,7 @@ export const createAmbientPathResolver = (
               ]
             : current.capturedSelections;
         const expansions = current.readsAtSelf ? expanded : expandedAtCapture;
-        const previous = summarizedRoots.some((roots) => roots.has(root))
+        const previous = coverage.covered(root, activeSummaries)
           ? null
           : expansions.get(root);
         if (previous !== undefined) {
@@ -886,11 +952,10 @@ export const createAmbientPathResolver = (
           );
           continue;
         }
-        const callResult =
-          possibleWrites &&
-          (t.isCallExpression(root) || t.isOptionalCallExpression(root))
-            ? facts?.callResult(root)
-            : undefined;
+        const callResult = (
+          observedCall ??
+          (possibleWrites && isCall ? facts?.callResult(root) : undefined)
+        )?.result;
         if (callResult?.kind === "prototype") {
           continueWith(
             callResult.target,
@@ -927,22 +992,8 @@ export const createAmbientPathResolver = (
           ]);
           resolvedIdentity = true;
         }
-        if (
-          possibleWrites &&
-          (t.isCallExpression(root) ||
-            t.isOptionalCallExpression(root) ||
-            t.isNewExpression(root) ||
-            t.isTaggedTemplateExpression(root) ||
-            (escapedContents && (t.isFunction(root) || t.isClass(root))))
-        ) {
-          continueReturned(
-            t.isFunction(root) || t.isClass(root)
-              ? root
-              : t.isTaggedTemplateExpression(root)
-                ? root.tag
-                : root.callee,
-            suffix,
-          );
+        if (callee !== undefined) {
+          continueReturned(callee, suffix);
           continue;
         }
         if (possibleWrites && t.isConditionalExpression(root)) {
@@ -1113,11 +1164,12 @@ export const createAmbientPathResolver = (
     const paths = [...result.values()];
     // A separate walk cannot let a tentative selection mask an ordinary one
     // in the identity cache, or publish unrelated tentative ambient paths.
-    if (frontier !== undefined)
+    if (summaryWalk !== undefined)
       summary?.retain({
-        frontier,
-        roots: expanded,
-        paths,
+        frontier: summaryWalk.frontier,
+        slot: coverage.register(summaryWalk.roots.keys()),
+        // The summary owns the canonical keys produced by retain().
+        paths: result,
         unknownReasons: [...unknownReasons],
         projectedSpread,
       });
@@ -1384,6 +1436,7 @@ export function* indexJavaScriptAmbientWritesSteps(
   }[] = [];
   const stores = new WeakMap<t.Node, AmbientStoredReferences>();
   const interop = createSemanticModuleInterop(state, {
+    fixedIntrinsicPaths: true,
     intrinsicPath: (node) => {
       const [path] = ambientReads(node).paths;
       return path?.[0] === "global" && path.every((key) => key !== null)
@@ -1391,6 +1444,44 @@ export function* indexJavaScriptAmbientWritesSteps(
         : undefined;
     },
   });
+  // Resolve captures after the scan has observed every opaque site. Unlike
+  // invocation classification, interpreting the ambient return form is only
+  // needed by the post-scan walk.
+  const settledCalls = new WeakMap<
+    t.CallExpression | t.OptionalCallExpression,
+    ReturnType<AmbientReferenceFacts["callResult"]>
+  >();
+  const classifyCall = (
+    node: t.CallExpression | t.OptionalCallExpression,
+    invocation: JavaScriptIntrinsicInvocation | undefined,
+  ): AmbientCallResult | undefined => {
+    const prototype = intrinsicPrototypeRead(invocation);
+    if (prototype !== undefined)
+      return { kind: "prototype", target: prototype };
+    if (
+      invocation?.path.length === 4 &&
+      invocation.path[1] === "Array" &&
+      invocation.path[2] === "prototype" &&
+      arrayIteratorMethods.has(invocation.path[3]!)
+    )
+      return { kind: "array-iterator" };
+    const callee = unwrapJavaScriptExpression(node.callee).node;
+    if (!(t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee)))
+      return undefined;
+    const key = semanticStaticPropertyKey(callee.property, callee.computed);
+    if (
+      !(key !== null && arrayIteratorMethods.has(key)) &&
+      !(
+        callee.computed &&
+        globalReferenceNamespace(callee.property, state, [
+          "Symbol",
+          "iterator",
+        ]) !== undefined
+      )
+    )
+      return undefined;
+    return { kind: "array-iterator", receiver: callee.object };
+  };
   const ambientWrites = createAmbientPathResolver(state, true, {
     stores,
     freshObject: interop.isFreshObject,
@@ -1400,35 +1491,12 @@ export function* indexJavaScriptAmbientWritesSteps(
         (isIntrinsicGlobalReference(node.callee, state, "Array") ||
           isIntrinsicTypedArrayConstruction(node, state))),
     callResult: (node) => {
-      const invocation = interop.intrinsicInvocation(node);
-      const prototype = intrinsicPrototypeRead(invocation);
-      if (prototype !== undefined)
-        return { kind: "prototype", target: prototype };
-      if (
-        invocation?.path.length === 4 &&
-        invocation.path[1] === "Array" &&
-        invocation.path[2] === "prototype" &&
-        arrayIteratorMethods.has(invocation.path[3]!)
-      )
-        return { kind: "array-iterator" };
-      const callee = unwrapJavaScriptExpression(node.callee).node;
-      if (
-        !(t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee))
-      )
-        return undefined;
-      const key = semanticStaticPropertyKey(callee.property, callee.computed);
-      if (
-        !(key !== null && arrayIteratorMethods.has(key)) &&
-        !(
-          callee.computed &&
-          globalReferenceNamespace(callee.property, state, [
-            "Symbol",
-            "iterator",
-          ]) !== undefined
-        )
-      )
-        return undefined;
-      return { kind: "array-iterator", receiver: callee.object };
+      const cached = settledCalls.get(node);
+      if (cached !== undefined) return cached;
+      const { invocation, settled } = interop.intrinsicInvocationFacts(node);
+      const effects = { result: classifyCall(node, invocation), settled };
+      if (settled) settledCalls.set(node, effects);
+      return effects;
     },
   });
   yield* collectJavaScriptIdentityWritesSteps(
